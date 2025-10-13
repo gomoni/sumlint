@@ -1,0 +1,298 @@
+package sumlint
+
+import (
+	"go/ast"
+	"go/token"
+	"go/types"
+	"sort"
+	"strings"
+
+	"golang.org/x/tools/go/analysis"
+)
+
+// InterfaceImplementorsFact stores (packagePath.InterfaceName) -> implementor type names (qualified)
+type InterfaceImplementorsFact struct {
+	Implementors []string // fully qualified (pkgpath.TypeName)
+}
+
+func (f *InterfaceImplementorsFact) AFact() {}
+
+// Provide stable, concise string form for analysistest fact matching.
+func (f *InterfaceImplementorsFact) String() string {
+	return strings.Join(f.Implementors, ",")
+}
+
+var Analyzer = &analysis.Analyzer{
+	Name: "sumlint",
+	Doc:  "checks exhaustive type switches over Sum* interfaces with single unexported marker method",
+	Run:  run,
+	FactTypes: []analysis.Fact{
+		new(InterfaceImplementorsFact),
+	},
+}
+
+func run(pass *analysis.Pass) (any, error) {
+	sumIfaces := discoverSumInterfaces(pass)
+	if len(sumIfaces) > 0 {
+		exportImplementorFacts(pass, sumIfaces)
+	}
+	ifaceImpls := loadAllInterfaceFacts(pass)
+
+	for _, f := range pass.Files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSwitchStmt)
+			if !ok {
+				return true
+			}
+			checkTypeSwitch(pass, ts, ifaceImpls)
+			return true
+		})
+	}
+
+	return nil, nil
+}
+
+func discoverSumInterfaces(pass *analysis.Pass) map[*types.TypeName]*types.Interface {
+	out := make(map[*types.TypeName]*types.Interface)
+	for _, file := range pass.Files {
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				name := ts.Name.Name
+				if !strings.HasPrefix(name, "Sum") {
+					continue
+				}
+				obj, ok := pass.TypesInfo.Defs[ts.Name]
+				if !ok {
+					continue
+				}
+				named, ok := obj.Type().(*types.Named)
+				if !ok {
+					continue
+				}
+				iface, ok := named.Underlying().(*types.Interface)
+				if !ok {
+					continue
+				}
+				if !isValidSumInterface(name, iface) {
+					continue
+				}
+				out[obj.(*types.TypeName)] = iface
+			}
+		}
+	}
+	return out
+}
+
+func isValidSumInterface(name string, iface *types.Interface) bool {
+	iface = iface.Complete()
+	if iface.NumEmbeddeds() != 0 {
+		return false
+	}
+	if iface.NumMethods() != 1 {
+		return false
+	}
+	m := iface.Method(0)
+	expected := lowerFirst(name)
+	if m.Name() != expected {
+		return false
+	}
+	sig, ok := m.Type().(*types.Signature)
+	if !ok {
+		return false
+	}
+	if sig.Params().Len() != 0 || sig.Results().Len() != 0 {
+		return false
+	}
+	return true
+}
+
+func lowerFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToLower(s[:1]) + s[1:]
+}
+
+func exportImplementorFacts(pass *analysis.Pass, sumIfaces map[*types.TypeName]*types.Interface) {
+	byIface := make(map[*types.TypeName]map[string]struct{})
+	for ifaceObj := range sumIfaces {
+		byIface[ifaceObj] = make(map[string]struct{})
+	}
+	scope := pass.Pkg.Scope()
+	for _, name := range scope.Names() {
+		obj := scope.Lookup(name)
+		tn, ok := obj.(*types.TypeName)
+		if !ok {
+			continue
+		}
+		named, ok := tn.Type().(*types.Named)
+		if !ok {
+			continue
+		}
+		if _, isIface := named.Underlying().(*types.Interface); isIface {
+			continue
+		}
+		for ifaceObj, ifaceType := range sumIfaces {
+			if types.Implements(named, ifaceType) || types.Implements(types.NewPointer(named), ifaceType) {
+				key := qualifiedTypeName(tn)
+				byIface[ifaceObj][key] = struct{}{}
+			}
+		}
+	}
+	for ifaceObj, implSet := range byIface {
+		if len(implSet) == 0 {
+			continue
+		}
+		list := make([]string, 0, len(implSet))
+		for k := range implSet {
+			list = append(list, k)
+		}
+		sort.Strings(list) // deterministic ordering for tests
+		pass.ExportObjectFact(ifaceObj, &InterfaceImplementorsFact{Implementors: list})
+	}
+}
+
+func loadAllInterfaceFacts(pass *analysis.Pass) map[*types.TypeName]map[string]struct{} {
+	res := make(map[*types.TypeName]map[string]struct{})
+	scope := pass.Pkg.Scope()
+	for _, name := range scope.Names() {
+		obj := scope.Lookup(name)
+		tn, ok := obj.(*types.TypeName)
+		if !ok {
+			continue
+		}
+		_, ok = tn.Type().Underlying().(*types.Interface)
+		if !ok {
+			continue
+		}
+		var fact InterfaceImplementorsFact
+		if pass.ImportObjectFact(tn, &fact) {
+			set := make(map[string]struct{}, len(fact.Implementors))
+			for _, t := range fact.Implementors {
+				set[t] = struct{}{}
+			}
+			res[tn] = set
+		}
+	}
+	for ident, obj := range pass.TypesInfo.Uses {
+		_ = ident
+		tn, ok := obj.(*types.TypeName)
+		if !ok {
+			continue
+		}
+		if _, ok := tn.Type().Underlying().(*types.Interface); !ok {
+			continue
+		}
+		if _, exists := res[tn]; exists {
+			continue
+		}
+		var fact InterfaceImplementorsFact
+		if pass.ImportObjectFact(tn, &fact) {
+			set := make(map[string]struct{}, len(fact.Implementors))
+			for _, t := range fact.Implementors {
+				set[t] = struct{}{}
+			}
+			res[tn] = set
+		}
+	}
+	return res
+}
+
+func checkTypeSwitch(pass *analysis.Pass, ts *ast.TypeSwitchStmt, ifaceImpls map[*types.TypeName]map[string]struct{}) {
+	var asserted types.Type
+	switch ass := ts.Assign.(type) {
+	case *ast.AssignStmt:
+		if len(ass.Rhs) != 1 {
+			return
+		}
+		ta, ok := ass.Rhs[0].(*ast.TypeAssertExpr)
+		if !ok || ta.Type != nil {
+			return
+		}
+		asserted = pass.TypesInfo.TypeOf(ta.X)
+	case *ast.ExprStmt:
+		ta, ok := ass.X.(*ast.TypeAssertExpr)
+		if !ok || ta.Type != nil {
+			return
+		}
+		asserted = pass.TypesInfo.TypeOf(ta.X)
+	default:
+		return
+	}
+
+	if asserted == nil {
+		return
+	}
+	if _, ok := asserted.Underlying().(*types.Interface); !ok {
+		return
+	}
+	var ifaceObj *types.TypeName
+	if named, ok := asserted.(*types.Named); ok {
+		ifaceObj = named.Obj()
+	} else {
+		return
+	}
+	implSet, hasFact := ifaceImpls[ifaceObj]
+	if !hasFact || len(implSet) == 0 {
+		return
+	}
+
+	covered := make(map[string]struct{})
+	var hasDefault bool
+	for _, cc := range ts.Body.List {
+		clause, _ := cc.(*ast.CaseClause)
+		if clause == nil {
+			continue
+		}
+		if clause.List == nil {
+			hasDefault = true
+			continue
+		}
+		for _, expr := range clause.List {
+			t := pass.TypesInfo.TypeOf(expr)
+			if t == nil {
+				continue
+			}
+			if pt, ok := t.(*types.Pointer); ok {
+				t = pt.Elem()
+			}
+			named, ok := t.(*types.Named)
+			if !ok {
+				continue
+			}
+			tn := named.Obj()
+			key := qualifiedTypeName(tn)
+			covered[key] = struct{}{}
+		}
+	}
+
+	var missing []string
+	for impl := range implSet {
+		if _, ok := covered[impl]; !ok {
+			missing = append(missing, impl)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		pass.Reportf(ts.Switch, "non-exhaustive type switch on %s: missing cases for: %s",
+			ifaceObj.Name(), strings.Join(missing, ", "))
+	}
+	if !hasDefault {
+		pass.Reportf(ts.Switch, "missing default case on %s: code cannot handle nil interface", ifaceObj.Name())
+	}
+}
+
+func qualifiedTypeName(tn *types.TypeName) string {
+	if tn.Pkg() == nil {
+		return tn.Name()
+	}
+	return tn.Pkg().Path() + "." + tn.Name()
+}

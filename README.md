@@ -1,0 +1,134 @@
+# sumlint
+
+`sumlint` adds exhaustiveness checks for your interface "sum types" using a lightweight
+naming convention + `go vet`.
+
+Install:
+
+```sh
+go install github.com/gomoni/sumlint/cmd/sumlint
+```
+
+Run:
+
+```sh
+go vet -vettool="$(go env GOPATH)/bin/sumlint" ./...
+```
+
+# Sum types in Go
+
+> A sum type (enum / tagged / disjoint union / oneof) is a type that can hold exactly one value chosen from a fixed set of alternative types.
+
+Go does not provide first–class sum types. It has almost all the needed ingredients: interfaces, type switches, generics. But it lacks:
+
+1. Native pattern matching syntax
+2. Compiler‑enforced exhaustiveness
+
+`sumlint` fills the exhaustiveness gap by turning a naming convention into checks at `go vet` time.
+
+## Properties of sum types
+
+1. Ability to represent set of types via single one
+2. Pattern matching
+3. Exhaustive match
+
+Go already covers (1) with interfaces and (in a different way) with generic type sets. Example of a generic type set resembling a sum:
+
+```
+type SumType interface {
+	structA | structB
+}
+```
+
+This has a major caveat. One can't have `var SumType aSum` anywhere in a code. This declaration can be used as a type parameter constraint only.
+
+For (2) Go only offers the type switch. You can discriminate on the dynamic type, but you cannot express "match on value plus structure" the way functional languages allow.
+
+For (3) (the critical piece) Go provides no built‑in exhaustiveness checking for interfaces or switches. Adding a new implementation silently produces partial handling.
+
+`sumlint` is a `go vet` analyzer that enforces exhaustive handling of “declared sum interfaces” plus a mandatory default case (to make `nil` handling explicit).
+
+
+## Declaring a Sum interface
+
+In Go community there is a great precedent. The `Test`,
+`Bench` and `Fuzz` prefixes are merely a _convention_, which all have a
+actual meaning for testing code.
+
+Thus `sumlint` recognizes a sum interface by
+
+ * Public interface name starts with `Sum` prefix.
+ * Contains unexported method with same name as an interface itself. That means the prefix of the method is `sum`.
+
+And that's it. This is enough for `sumlint` to recognize and handle
+variables and having a method unexported means, the set of types
+implementing this interface is closed. Example is.
+
+```go
+// SumFoo declares a sum type, which is recognized by sumlint
+type SumFoo interface {
+	sumFoo()
+}
+
+// A is an implementation of a SumFoo
+type A struct{}
+func (A) sumFoo() {}
+```
+
+## 2. Exhaustive Type Switch Checking
+
+`sumlint` inspects type switches of all detected Sum* interfaces and reports two distinct problems.
+
+1. The switch is not exhaustive - it is a problem and code should be fixed.
+2. The switch does not have `default:` branch, so it can't handle `nil` interface.
+
+The (2) is not present in functional languages, but is necessary in Go as interfaces can be nil.
+
+Examples (see `tests/` directory):
+
+```go
+// all cases handled
+func good(x SumFoo) {
+	switch x.(type) {
+	case A, B:
+	default:
+	}
+}
+
+// missing default, is reported
+func noDefault(x SumFoo) {
+	switch x.(type) {
+	case A, B:
+	}
+}
+
+// missing B
+func noB(x SumFoo) {
+	switch x.(type) {
+	case A:
+	default:
+	}
+}
+```
+
+```sh
+$ cd tests; go vet -vettool=${HOME}/go/bin/sumlint .
+# github.com/gomoni/sumlint/tests
+./src.go:23:2: missing default case on SumFoo: code cannot handle nil interface
+./src.go:29:2: non-exhaustive type switch on SumFoo: missing cases for: github.com/gomoni/sumlint/tests.B
+```
+
+## Conclusion
+
+`sumlint` lets you use exhaustively checked sum types in plain Go using a
+lightweight naming convention and `go vet`.
+
+Happy vetting!
+
+# Limitations
+
+- Only switches are analyzed (no if‑chains).
+- Variants across multiple files in the same package are supported.
+- Generics: works on ordinary interface values, not on constraint-only type sets.
+- It is a linter. It has no support for auto generating marshal/unmarshal code.
+- One can't opt-out from exhaustiveness check using a panic
