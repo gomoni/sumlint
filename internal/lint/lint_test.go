@@ -23,7 +23,15 @@ func TestAnalyzer(t *testing.T) {
 			pkgs: []string{
 				"exhaustive",
 				"nonexhaustive",
-				"dflt"},
+				"dflt",
+			},
+		},
+		{
+			scenario: "oneoflint",
+			analyzer: lint.Oneof,
+			pkgs: []string{
+				"one_of",
+			},
 		},
 	}
 	for _, tc := range testCases {

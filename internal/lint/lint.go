@@ -31,6 +31,15 @@ var Sum = &analysis.Analyzer{
 	},
 }
 
+var Oneof = &analysis.Analyzer{
+	Name: "oneoflint",
+	Doc:  "checks exhaustive type switches over oneof fields in proto files",
+	Run:  analyzer{prefix: "is"}.run,
+	FactTypes: []analysis.Fact{
+		new(InterfaceImplementorsFact),
+	},
+}
+
 type analyzer struct {
 	prefix string
 }
