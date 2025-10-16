@@ -1,4 +1,4 @@
-package sumlint
+package lint
 
 import (
 	"go/ast"
@@ -22,17 +22,21 @@ func (f *InterfaceImplementorsFact) String() string {
 	return strings.Join(f.Implementors, ",")
 }
 
-var Analyzer = &analysis.Analyzer{
+var Sum = &analysis.Analyzer{
 	Name: "sumlint",
 	Doc:  "checks exhaustive type switches over Sum* interfaces with single unexported marker method",
-	Run:  run,
+	Run:  analyzer{prefix: "Sum"}.run,
 	FactTypes: []analysis.Fact{
 		new(InterfaceImplementorsFact),
 	},
 }
 
-func run(pass *analysis.Pass) (any, error) {
-	sumIfaces := discoverSumInterfaces(pass)
+type analyzer struct {
+	prefix string
+}
+
+func (a analyzer) run(pass *analysis.Pass) (any, error) {
+	sumIfaces := a.discoverSumInterfaces(pass)
 	if len(sumIfaces) > 0 {
 		exportImplementorFacts(pass, sumIfaces)
 	}
@@ -52,7 +56,7 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-func discoverSumInterfaces(pass *analysis.Pass) map[*types.TypeName]*types.Interface {
+func (a analyzer) discoverSumInterfaces(pass *analysis.Pass) map[*types.TypeName]*types.Interface {
 	out := make(map[*types.TypeName]*types.Interface)
 	for _, file := range pass.Files {
 		for _, decl := range file.Decls {
@@ -66,7 +70,7 @@ func discoverSumInterfaces(pass *analysis.Pass) map[*types.TypeName]*types.Inter
 					continue
 				}
 				name := ts.Name.Name
-				if !strings.HasPrefix(name, "Sum") {
+				if !strings.HasPrefix(name, a.prefix) {
 					continue
 				}
 				obj, ok := pass.TypesInfo.Defs[ts.Name]

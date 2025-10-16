@@ -3,9 +3,9 @@ package main
 import (
 	"golang.org/x/tools/go/analysis/unitchecker"
 
-	"github.com/gomoni/sumlint/internal/sumlint"
+	"github.com/gomoni/sumlint/internal/lint"
 )
 
 func main() {
-	unitchecker.Main(sumlint.Analyzer)
+	unitchecker.Main(lint.Sum)
 }

@@ -1,35 +1,51 @@
-package sumlint_test
+package lint_test
 
 import (
 	"fmt"
 	"go/types"
 	"testing"
 
-	"github.com/gomoni/sumlint/internal/sumlint"
+	"github.com/gomoni/sumlint/internal/lint"
 
+	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/analysistest"
 )
 
 func TestAnalyzer(t *testing.T) {
-	tests := []string{
-		"exhaustive",
-		"nonexhaustive",
-		"dflt",
+	var testCases = []struct {
+		scenario string
+		analyzer *analysis.Analyzer
+		pkgs     []string
+	}{
+		{
+			scenario: "sumlint",
+			analyzer: lint.Sum,
+			pkgs: []string{
+				"exhaustive",
+				"nonexhaustive",
+				"dflt"},
+		},
 	}
-	for _, name := range tests {
-		t.Run(name, func(t *testing.T) {
-			testAnalyzer(t, name)
-		})
+	for _, tc := range testCases {
+		for _, pkg := range tc.pkgs {
+			t.Run(tc.scenario+"/"+pkg, func(t *testing.T) {
+				testAnalyzer(t, tc.analyzer, pkg)
+			})
+		}
 	}
 }
 
-func testAnalyzer(t *testing.T, name string) {
+func testAnalyzer(t *testing.T, analyzer *analysis.Analyzer, name string) {
 	t.Helper()
 	testdata := analysistest.TestData()
 
+	if analyzer == nil {
+		t.Fatal("analyzer is nil")
+	}
+
 	var got []string
 	t2 := errorfunc(func(s string) { got = append(got, s) })
-	results := analysistest.Run(t2, testdata, sumlint.Analyzer, name)
+	results := analysistest.Run(t2, testdata, analyzer, name)
 
 	// Dump exported facts for debugging.
 	for _, r := range results {
