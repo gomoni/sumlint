@@ -1,0 +1,17 @@
+syntax = "proto3";
+option go_package="one.of";
+package oneof;
+
+message A {
+  int32 id = 1;
+}
+message B {
+  string name = 1;
+}
+
+message Msg {
+  oneof payload {
+    A a = 1;
+    B b = 2;
+  }
+}
