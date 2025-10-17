@@ -30,7 +30,7 @@ jobs:
       run: go build github.com/gomoni/sumlint/cmd/sumlint
 
     - name: Build oneoflint
-      run: go build github.com/gomoni/sumlint/cmd
+      run: go build github.com/gomoni/sumlint/cmd/oneoflint
 
     - name: Test
       run: go test -race -v ./...
