@@ -10,4 +10,4 @@ func (A) sumFoo() {}
 
 type B struct{}
 
-func (B) sumFoo() {}
+func (*B) sumFoo() {}

@@ -1,14 +1,28 @@
 package lint
 
 import (
+	"flag"
 	"go/ast"
 	"go/token"
 	"go/types"
+	"log/slog"
+	"os"
 	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
 )
+
+func init() {
+	var verboseFlag bool
+
+	fs1 := flag.NewFlagSet(Sum.Name, flag.ExitOnError)
+	fs1.BoolVar(&verboseFlag, "verbose", false, "enable verbose output")
+	Sum.Flags = *fs1
+	fs2 := flag.NewFlagSet(Oneof.Name, flag.ExitOnError)
+	fs2.BoolVar(&verboseFlag, "verbose", false, "enable verbose output")
+	Oneof.Flags = *fs2
+}
 
 // InterfaceImplementorsFact stores (packagePath.InterfaceName) -> implementor type names (qualified)
 type InterfaceImplementorsFact struct {
@@ -45,11 +59,28 @@ type analyzer struct {
 }
 
 func (a analyzer) run(pass *analysis.Pass) (any, error) {
+	flagVerbose := getFlag(pass.Analyzer.Flags, "verbose", false)
+	if flagVerbose {
+		sumLog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		sumLog = sumLog.With("analyzer", pass.Analyzer.Name)
+		slog.SetDefault(sumLog)
+	}
+
 	sumIfaces := a.discoverSumInterfaces(pass)
 	if len(sumIfaces) > 0 {
+		slog.Debug("discovered interfaces", "count", len(sumIfaces))
 		exportImplementorFacts(pass, sumIfaces)
 	}
 	ifaceImpls := loadAllInterfaceFacts(pass)
+	if flagVerbose {
+		count := 0
+		for _, impls := range ifaceImpls {
+			count += len(impls)
+		}
+		if count > 0 {
+			slog.Debug("discovered implementations", "count", count)
+		}
+	}
 
 	for _, f := range pass.Files {
 		ast.Inspect(f, func(n ast.Node) bool {
@@ -157,6 +188,7 @@ func exportImplementorFacts(pass *analysis.Pass, sumIfaces map[*types.TypeName]*
 			if types.Implements(named, ifaceType) || types.Implements(types.NewPointer(named), ifaceType) {
 				key := qualifiedTypeName(tn)
 				byIface[ifaceObj][key] = struct{}{}
+
 			}
 		}
 	}
@@ -167,6 +199,7 @@ func exportImplementorFacts(pass *analysis.Pass, sumIfaces map[*types.TypeName]*
 		list := make([]string, 0, len(implSet))
 		for k := range implSet {
 			list = append(list, k)
+			slog.Debug("exporting implementation", "interface", ifaceObj.Name(), "name", k)
 		}
 		sort.Strings(list) // deterministic ordering for tests
 		pass.ExportObjectFact(ifaceObj, &InterfaceImplementorsFact{Implementors: list})
@@ -190,6 +223,7 @@ func loadAllInterfaceFacts(pass *analysis.Pass) map[*types.TypeName]map[string]s
 		if pass.ImportObjectFact(tn, &fact) {
 			set := make(map[string]struct{}, len(fact.Implementors))
 			for _, t := range fact.Implementors {
+				slog.Debug("loadAllInterfaceFacts: scopeNames", "tn", tn, "t", t)
 				set[t] = struct{}{}
 			}
 			res[tn] = set
@@ -211,6 +245,7 @@ func loadAllInterfaceFacts(pass *analysis.Pass) map[*types.TypeName]map[string]s
 		if pass.ImportObjectFact(tn, &fact) {
 			set := make(map[string]struct{}, len(fact.Implementors))
 			for _, t := range fact.Implementors {
+				slog.Debug("loadAllInterfaceFacts: ImportObjectFact", "tn", tn, "t", t)
 				set[t] = struct{}{}
 			}
 			res[tn] = set
@@ -218,7 +253,6 @@ func loadAllInterfaceFacts(pass *analysis.Pass) map[*types.TypeName]map[string]s
 	}
 	return res
 }
-
 func checkTypeSwitch(pass *analysis.Pass, ts *ast.TypeSwitchStmt, ifaceImpls map[*types.TypeName]map[string]struct{}) {
 	var asserted types.Type
 	switch ass := ts.Assign.(type) {
@@ -230,13 +264,13 @@ func checkTypeSwitch(pass *analysis.Pass, ts *ast.TypeSwitchStmt, ifaceImpls map
 		if !ok || ta.Type != nil {
 			return
 		}
-		asserted = pass.TypesInfo.TypeOf(ta.X)
+		asserted = pass.TypesInfo.TypeOf(ta.X) // e.g. msg.GetPayload()
 	case *ast.ExprStmt:
 		ta, ok := ass.X.(*ast.TypeAssertExpr)
 		if !ok || ta.Type != nil {
 			return
 		}
-		asserted = pass.TypesInfo.TypeOf(ta.X)
+		asserted = pass.TypesInfo.TypeOf(ta.X) // e.g. msg.GetPayload()
 	default:
 		return
 	}
@@ -244,16 +278,44 @@ func checkTypeSwitch(pass *analysis.Pass, ts *ast.TypeSwitchStmt, ifaceImpls map
 	if asserted == nil {
 		return
 	}
+	if ptr, ok := asserted.(*types.Pointer); ok {
+		asserted = ptr.Elem()
+	}
 	if _, ok := asserted.Underlying().(*types.Interface); !ok {
 		return
 	}
+
 	var ifaceObj *types.TypeName
 	if named, ok := asserted.(*types.Named); ok {
 		ifaceObj = named.Obj()
 	} else {
+		// Try match by underlying interface identity
+		for tn := range ifaceImpls {
+			if tn.Type().Underlying() == asserted.Underlying() {
+				ifaceObj = tn
+				break
+			}
+		}
+	}
+	if ifaceObj == nil {
 		return
 	}
+
 	implSet, hasFact := ifaceImpls[ifaceObj]
+	// If this package did not discover the interface (e.g. unexported in another package),
+	// attempt to import its fact now that we have the *types.TypeName from the type switch expression.
+	if !hasFact || len(implSet) == 0 {
+		var fact InterfaceImplementorsFact
+		if pass.ImportObjectFact(ifaceObj, &fact) && len(fact.Implementors) > 0 {
+			newSet := make(map[string]struct{}, len(fact.Implementors))
+			for _, implObj := range fact.Implementors {
+				newSet[implObj] = struct{}{}
+			}
+			ifaceImpls[ifaceObj] = newSet
+			implSet = newSet
+			hasFact = true
+		}
+	}
 	if !hasFact || len(implSet) == 0 {
 		return
 	}
@@ -308,4 +370,15 @@ func qualifiedTypeName(tn *types.TypeName) string {
 		return tn.Name()
 	}
 	return tn.Pkg().Path() + "." + tn.Name()
+}
+
+func getFlag[T any](fs flag.FlagSet, key string, def T) T {
+	if fl := fs.Lookup(key); fl != nil {
+		if g, ok := fl.Value.(flag.Getter); ok {
+			if t, ok := g.Get().(T); ok {
+				return t
+			}
+		}
+	}
+	return def
 }

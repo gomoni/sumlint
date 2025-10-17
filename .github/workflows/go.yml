@@ -22,5 +22,11 @@ jobs:
     - name: Build
       run: go build -v ./...
 
+    - name: sumlint
+      run: go build github.com/gomoni/sumlint/cmd/sumlint
+
+    - name: oneoflint
+      run: go build github.com/gomoni/sumlint/cmd/oneoflint
+
     - name: Test
       run: go test -race -v ./...

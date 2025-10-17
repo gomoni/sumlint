@@ -2,20 +2,22 @@ package test
 
 import "github.com/gomoni/sumlint/test/sum"
 
-func good(x sum.SumFoo) {
+type sumTest struct{}
+
+func (sumTest) good(x sum.SumFoo) {
 	switch x.(type) {
-	case sum.A, sum.B:
+	case sum.A, *sum.B:
 	default:
 	}
 }
 
-func noDefault(x sum.SumFoo) {
+func (sumTest) noDefault(x sum.SumFoo) {
 	switch x.(type) {
-	case sum.A, sum.B:
+	case sum.A, *sum.B:
 	}
 }
 
-func noB(x sum.SumFoo) {
+func (sumTest) noB(x sum.SumFoo) {
 	switch x.(type) {
 	case sum.A:
 	default:
