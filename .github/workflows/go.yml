@@ -22,11 +22,15 @@ jobs:
     - name: Build
       run: go build -v ./...
 
-    - name: sumlint
+    - name: Build test dir
+      working-directory: test
+      run: go build -v ./...
+
+    - name: Build sumlint
       run: go build github.com/gomoni/sumlint/cmd/sumlint
 
-    - name: oneoflint
-      run: go build github.com/gomoni/sumlint/cmd/oneoflint
+    - name: Build oneoflint
+      run: go build github.com/gomoni/sumlint/cmd
 
     - name: Test
       run: go test -race -v ./...
