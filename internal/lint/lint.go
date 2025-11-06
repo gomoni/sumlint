@@ -7,6 +7,7 @@ import (
 	"go/types"
 	"log/slog"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -38,8 +39,8 @@ func (f *InterfaceImplementorsFact) String() string {
 
 var Sum = &analysis.Analyzer{
 	Name: "sumlint",
-	Doc:  "checks exhaustive type switches over Sum* interfaces with single unexported marker method",
-	Run:  analyzer{prefix: "Sum"}.run,
+	Doc:  "Ensures type switches handle all variants of interfaces that act as sum types, preventing missed cases.",
+	Run:  newAnalyzer("Sum").run,
 	FactTypes: []analysis.Fact{
 		new(InterfaceImplementorsFact),
 	},
@@ -47,15 +48,19 @@ var Sum = &analysis.Analyzer{
 
 var Oneof = &analysis.Analyzer{
 	Name: "oneoflint",
-	Doc:  "checks exhaustive type switches over oneof fields in proto files",
-	Run:  analyzer{prefix: "is"}.run,
+	Doc:  "Ensures type switches exhaustively handle all variants of protobuf oneof fields. Missing cases in type switches could lead to incomplete handling of possible values, which may cause runtime errors. Supports public variant of the interface too.",
+	Run:  newAnalyzer("is", "Is").run,
 	FactTypes: []analysis.Fact{
 		new(InterfaceImplementorsFact),
 	},
 }
 
 type analyzer struct {
-	prefix string
+	prefixes []string
+}
+
+func newAnalyzer(prefixes ...string) analyzer {
+	return analyzer{prefixes: prefixes}
 }
 
 func (a analyzer) run(pass *analysis.Pass) (any, error) {
@@ -110,7 +115,9 @@ func (a analyzer) discoverSumInterfaces(pass *analysis.Pass) map[*types.TypeName
 					continue
 				}
 				name := ts.Name.Name
-				if !strings.HasPrefix(name, a.prefix) {
+				if idx := slices.IndexFunc(a.prefixes, func(prefix string) bool {
+					return strings.HasPrefix(name, prefix)
+				}); idx == -1 {
 					continue
 				}
 				obj, ok := pass.TypesInfo.Defs[ts.Name]

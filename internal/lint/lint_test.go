@@ -31,6 +31,7 @@ func TestAnalyzer(t *testing.T) {
 			analyzer: lint.Oneof,
 			pkgs: []string{
 				"one_of",
+				"oneofdflt",
 			},
 		},
 	}
